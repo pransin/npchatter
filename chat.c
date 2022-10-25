@@ -1,7 +1,11 @@
 #define HASH_TABLE_SIZE 517
 #define MAX_USERNAME_LENGTH 32
 #define MAX_PENDING 5
-#define SEND_USERNAME -1
+#define SAVE_USERNAME 1
+#define GET_UID 2
+#define GET_USERLIST 3
+#define LEAVE_SERVER 4
+#define MAX_BUFFER_LENGTH 4096 // Includes null char
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -18,10 +22,17 @@ struct msg
     char *mtext;
 };
 
-struct ctrl_msg{
+struct ctrl_msg
+{
     long mtype;
     pid_t pid;
     char *mtext;
+};
+
+struct ctrl_res_msg
+{
+    long mtype;
+    int qid; // qid = 0 for failure, > 0 for success
 };
 
 struct hash_entry
@@ -32,12 +43,20 @@ struct hash_entry
 };
 
 int msqid;
-int ctrlqid;
+int ctrl_qid;
+int ctrl_res_qid; // Control response qid
 
 void error_exit(char *msg)
 {
     perror(msg);
     exit(EXIT_FAILURE);
+}
+
+void send_error_msg(int clientfd, char *msg)
+{
+    int len = strlen(msg);
+    if (send(clientfd, msg, len, 0) != len)
+        error_exit("send error");
 }
 
 int calculate_hash(char *str)
@@ -88,7 +107,7 @@ void insert_table(char *username, struct hash_entry *hash_table)
     hash_table[hash_value].msgid = hash_value;
 }
 
-int get_msgid(char *username,struct hash_entry *hash_table)
+int get_msgid(char *username, struct hash_entry *hash_table)
 {
     int len = strlen(username);
     // for (int i = 0; i < len; i++)
@@ -113,7 +132,8 @@ int get_msgid(char *username,struct hash_entry *hash_table)
     return -1;
 }
 
-void handle_username(){
+void handle_username()
+{
 
     pid_t username_handler = fork();
 
@@ -127,46 +147,112 @@ void handle_username(){
         struct hash_entry hash_table[HASH_TABLE_SIZE];
         while (1)
         {
-            
         }
     }
 }
 
-bool check_username(char username[])
+int get_uid(char username[], int type)
 {
     struct ctrl_msg un_msg;
     size_t un_size = strlen(username);
-    un_msg.mtype = SEND_USERNAME;
+    un_msg.mtype = type;
     un_msg.pid = getpid();
     un_msg.mtext = malloc(un_size);
     if (un_msg.mtext == -1)
         error_exit("malloc");
     strcpy(un_msg.mtext, username);
-    msgsnd(ctrlqid, &un_msg, un_size + sizeof(un_msg.pid), 0);
-    msgrcv(ctrlqid, &un_msg, sizeof(un_msg.pid) + 1, getpid(), 0); // + 1 is for character indicating success or failure
-    return (un_msg.mtext[0] == '1');
+    msgsnd(ctrl_qid, &un_msg, un_size + sizeof(un_msg.pid), 0);
+
+    struct ctrl_res_msg reply;
+    msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0); // 1 character for indicating success or failure
+    return reply.qid;
 }
-void process_client(int clientfd)
+
+// check if the username is current in use.
+void login_client(int clientfd)
 {
     char msg[] = "Enter Username (Max 31 characters):";
-    if (send(clientfd, msg, strlen(msg), 0) != strlen(msg))
-        error_exit("send error");
-
-    // Receive username
     char self_username[MAX_USERNAME_LENGTH];
-    int name_len;
-    if ((name_len = recv(clientfd, self_username, MAX_USERNAME_LENGTH - 1, 0)) < 0)
-        error_exit("recv");
-    self_username[name_len] = '\0';
+    bool logged_in = false;
+    while (!logged_in)
+    {
+        if (send(clientfd, msg, strlen(msg), 0) != strlen(msg))
+            error_exit("send error");
 
-    // Send username to process handling usernames
-    check_username(self_username);
+        strcpy(msg, "Username taken. Try another one: "); // ensure strlen(msg) > second string
+        // Receive username
+        int name_len;
+        if ((name_len = recv(clientfd, self_username, MAX_USERNAME_LENGTH - 1, 0)) < 0)
+            error_exit("recv");
+        self_username[name_len] = '\0';
+
+        // Send username to process handling usernames
+        logged_in = get_uid(self_username, SAVE_USERNAME);
+    }
 }
+
+void send_msg(int clientfd, char *cmd, char *msg)
+{
+    if (!strlen(msg))
+    {
+        send_error_msg(clientfd, "Received empty message\n");
+        return;
+    }
+
+    int uid = get_uid(cmd, GET_UID);
+    if (!uid)
+    {
+        send_error_msg(clientfd, "Invalid username\n");
+        return;
+    }
+    struct msg message;
+    message.mtype = uid;
+    message.mtext = msg;
+    msgsnd(msqid, &message, strlen(msg), 0);
+}
+
+void process_client(int clientfd)
+{
+    login_client(clientfd);
+    char buf[MAX_BUFFER_LENGTH];
+    char delim[] = " \t\r\n\v\f"; // POSIX whitespace characters
+    int bytes_read;
+    while (1)
+    {
+        if ((bytes_read = recv(clientfd, buf, MAX_BUFFER_LENGTH - 1, 0)) < 0)
+            error_exit("recv");
+
+        buf[bytes_read] = '\0';
+        char *cmd, *msg = buf;
+        cmd = strtok_r(msg, delim, &msg);
+        if (strcmp(cmd, "leave") == 0)
+        {
+            // TODO
+            leave_server(clientfd);
+        }
+        else if (strcmp(cmd, "get_users") == 0)
+        {
+            // TODO
+            get_userlist();
+        }
+        else if (strcmp(cmd, "send") == 0)
+        {
+            cmd = strtok_r(msg, delim, &msg);
+            send_msg(clientfd, cmd, msg);
+        }
+        else
+        {
+            char msg[] = "Invalid Command\n";
+            send_error_msg(clientfd, msg);
+        }
+    }
+}
+
 int main()
 {
 
     msqid = msgget(IPC_PRIVATE, 0600);
-    ctrlqid = msgget(IPC_PRIVATE, 0600);
+    ctrl_qid = msgget(IPC_PRIVATE, 0600);
     int serverSocket = socket(PF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1)
         error_exit("socket creation error");
