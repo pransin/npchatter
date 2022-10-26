@@ -112,12 +112,12 @@ int insert_table(char *username, struct hash_entry *hash_table)
     }
     hash_table[hash_value].present = true;
     strcpy(hash_table[hash_value].user_name, username);
-    hash_table[hash_value].msgid = hash_value+1;
+    hash_table[hash_value].msgid = hash_value + 1;
     hash_table[hash_value].is_online = true;
     return 1;
 }
 
-int search_table(char *username, struct hash_entry *hash_table)
+struct hash_entry *search_table(char *username, struct hash_entry *hash_table)
 {
     int len = strlen(username);
     // for (int i = 0; i < len; i++)
@@ -134,12 +134,12 @@ int search_table(char *username, struct hash_entry *hash_table)
     {
         if (strcmp(hash_table[hash_value].user_name, username) == 0)
         {
-            return hash_table[hash_value].msgid;
+            return &hash_table[hash_value];
         }
         hash_value = (hash_value + 1) % HASH_TABLE_SIZE;
         probe_no++;
     }
-    return 0;
+    return NULL;
 }
 
 void handle_username()
@@ -156,26 +156,71 @@ void handle_username()
     {
         struct hash_entry hash_table[HASH_TABLE_SIZE];
         struct ctrl_msg req;
-        int types[4] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER};
+        int types[4] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER, BROADCAST};
         struct ctrl_res_msg res;
         int i = 0;
         while (1)
         {
-            msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(long) , types[i], 0);
-            switch(req.mtype){
-                case SAVE_USERNAME: res.qid = insert_table(req.mtext, hash_table);
-                        res.mtype = req.pid;
-                        msgsnd(ctrl_res_qid, &res, sizeof(res)-sizeof(long), 0);
-                        break;
-                case GET_UID: res.qid = search_table(req.mtext, hash_table);
-                        res.mtype = req.pid;
-                        msgsnd(ctrl_res_qid, &res, sizeof(res)-sizeof(long), 0);
-                        break;
-                case GET_USERLIST: break;
-                case LEAVE_SERVER: break;
-                default: break;
+            msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(long), types[i], 0);
+            switch (req.mtype)
+            {
+            case SAVE_USERNAME:
+                res.qid = insert_table(req.mtext, hash_table);
+                res.mtype = req.pid;
+                msgsnd(ctrl_res_qid, &res, sizeof(res) - sizeof(long), 0);
+                break;
+            case GET_UID:
+                struct hash_entry *he = search_table(req.mtext, hash_table);
+                res.qid = (he == NULL ? 0 : he->msgid);
+                res.mtype = req.pid;
+                msgsnd(ctrl_res_qid, &res, sizeof(res) - sizeof(long), 0);
+                break;
+            case GET_USERLIST:
+                struct msg message;
+                message.mtype = req.pid;
+                message.mtext = malloc(MAX_BUFFER_LENGTH);
+                int pos = 0;
+                for (int i = 0; i < HASH_TABLE_SIZE; i++)
+                {
+                    if (hash_table[i].present == true)
+                    {
+                        strcpy(pos + message.mtext, hash_table[i].user_name);
+                        pos += strlen(hash_table[i].user_name);
+                        message.mtext[pos++] = ':';
+                        if (hash_table[i].is_online == true)
+                        {
+                            strcpy(message.mtext + pos, " online\n");
+                            pos += 8;
+                        }
+                        else
+                        {
+                            strcpy(message.mtext + pos, " offline\n");
+                            pos += 9;
+                        }
+                    }
+                }
+                message.mtext[pos] = '\0';
+                msgsnd(msqid, &message, sizeof(message) - sizeof(long), 0);
+                break;
+            case LEAVE_SERVER:
+                struct hash_entry *he = search_table(req.mtext, hash_table);
+                res.mtype = req.pid;
+                if (he == NULL)
+                {
+                    res.qid = 0;
+                }
+                else
+                {
+                    he->is_online = false;
+                    res.qid = 1;
+                }
+                break;
+            case BROADCAST:
+                break;
+            default:
+                break;
             }
-            i = (i+1)%4;
+            i = (i + 1) % 5;
         }
     }
     else
@@ -251,7 +296,7 @@ void leave_server()
     struct ctrl_msg msg;
     msg.mtype = LEAVE_SERVER;
     msg.mtext = malloc(un_size);
-    if(msg.mtext == NULL)
+    if (msg.mtext == NULL)
         error_exit("malloc");
     strcpy(msg.mtext, self_username);
     msgsnd(ctrl_qid, &msg, un_size, 0);
@@ -263,24 +308,29 @@ void get_userlist(int clientfd)
     struct ctrl_msg message;
     message.mtype = GET_USERLIST;
     message.pid = self_uid;
-    msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0); 
+    msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0);
 }
 
-void* read_mq(void *cfd){
+void *read_mq(void *cfd)
+{
     int clientfd = *(int *)cfd;
     struct msg msg;
     msg.mtext = malloc(MAX_BUFFER_LENGTH);
-    if(msg.mtext == NULL){
+    if (msg.mtext == NULL)
+    {
         error_exit("malloc");
     }
-    while(self_uid != 0){
+    while (self_uid != 0)
+    {
         memset(&msg, 0, sizeof(msg));
         int bytes_read = msgrcv(msqid, &msg, MAX_BUFFER_LENGTH, self_uid, 0);
         send(clientfd, msg.mtext, bytes_read, 0);
     }
 }
-void broadcast_ms(int clientfd, char *msg){
-    if(strlen(msg) == 0){
+void broadcast_ms(int clientfd, char *msg)
+{
+    if (strlen(msg) == 0)
+    {
         send_error_msg(clientfd, "Empty message\n");
         return;
     }
@@ -296,9 +346,10 @@ void process_client(int clientfd)
     login_client(clientfd);
     // Spawn a thread for relaying from message queue to socket
     pthread_t msq_t;
-    if(pthread_create(&msq_t, NULL, read_mq, &clientfd) != 0){
+    if (pthread_create(&msq_t, NULL, read_mq, &clientfd) != 0)
+    {
         error_exit("pthread");
-    }     
+    }
 
     char buf[MAX_BUFFER_LENGTH];
     char delim[] = " \t\r\n\v\f"; // POSIX whitespace characters
@@ -328,7 +379,8 @@ void process_client(int clientfd)
             cmd = strtok_r(msg, delim, &msg);
             send_msg(clientfd, cmd, msg);
         }
-        else if (strcmp(cmd, "sendall") == 0){
+        else if (strcmp(cmd, "sendall") == 0)
+        {
             broadcast_ms(clientfd, msg);
         }
         else
