@@ -84,14 +84,14 @@ int calculate_hash(char *str)
 int insert_table(char *username, struct hash_entry *hash_table)
 {
     int len = strlen(username);
-    // for (int i = 0; i < len; i++)
-    // {
-    //     if (username[i] == '\n')
-    //     {
-    //         username[i] = '\0';
-    //         break;
-    //     }
-    // }
+    for (int i = 0; i < len; i++)
+    {
+        if (username[i] == '\n')
+        {
+            username[i] = '\0';
+            break;
+        }
+    }
     int hash_value = calculate_hash(username);
     int probe_no = 0;
     while (hash_table[hash_value].present == true && strcmp(username, hash_table[hash_value].user_name) != 0 && probe_no < HASH_TABLE_SIZE)
@@ -120,14 +120,14 @@ int insert_table(char *username, struct hash_entry *hash_table)
 struct hash_entry *search_table(char *username, struct hash_entry *hash_table)
 {
     int len = strlen(username);
-    // for (int i = 0; i < len; i++)
-    // {
-    //     if (username[i] == '\n')
-    //     {
-    //         username[i] = '\0';
-    //         break;
-    //     }
-    // }
+    for (int i = 0; i < len; i++)
+    {
+        if (username[i] == '\n')
+        {
+            username[i] = '\0';
+            break;
+        }
+    }
     int hash_value = calculate_hash(username);
     int probe_no = 0;
     while (hash_table[hash_value].present == true && probe_no < HASH_TABLE_SIZE)
@@ -221,10 +221,11 @@ void handle_username()
                 }
                 break;
             case BROADCAST:
-                for(int i=0;i<HASH_TABLE_SIZE;i++){
+                for (int i = 0; i < HASH_TABLE_SIZE; i++)
+                {
                     message.mtype = req.pid;
                     strcpy(message.mtext, req.mtext);
-                    msgsnd(msqid, &message, sizeof(message.mtext),0);
+                    msgsnd(msqid, &message, sizeof(message.mtext), 0);
                 }
                 break;
             default:
@@ -251,7 +252,7 @@ int get_uid(char username[], int type)
     msgsnd(ctrl_qid, &un_msg, un_size + sizeof(un_msg.pid), 0);
     printf("uid request sent for %s\n", un_msg.mtext);
     struct ctrl_res_msg reply;
-    msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0); 
+    msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0);
     printf("uid response %d\n", reply.qid);
     return reply.qid;
 }
