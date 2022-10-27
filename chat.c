@@ -46,7 +46,7 @@ struct hash_entry
     bool present;
     bool is_online;
 };
-
+char delim[] = " \t\r\n\v\f"; // POSIX whitespace characters
 int msqid;
 int ctrl_qid;
 int ctrl_res_qid; // Control response qid
@@ -114,7 +114,7 @@ int insert_table(char *username, struct hash_entry *hash_table)
     strcpy(hash_table[hash_value].user_name, username);
     hash_table[hash_value].msgid = hash_value + 1;
     hash_table[hash_value].is_online = true;
-    return 1;
+    return hash_table[hash_value].msgid;
 }
 
 struct hash_entry *search_table(char *username, struct hash_entry *hash_table)
@@ -154,29 +154,34 @@ void handle_username()
 
     if (username_handler == 0)
     {
+        printf("in handle_username\n");
         struct hash_entry hash_table[HASH_TABLE_SIZE];
+        struct hash_entry *he;
+        struct msg message;
         struct ctrl_msg req;
-        int types[4] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER, BROADCAST};
         struct ctrl_res_msg res;
+        int types[5] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER, BROADCAST};
         int i = 0;
+        req.mtext = malloc(MAX_USERNAME_LENGTH); // TODO: Error Checking
         while (1)
         {
-            msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(long), types[i], 0);
+            msgrcv(ctrl_qid, &req, sizeof(req.pid) + MAX_USERNAME_LENGTH, 0, 0);
+            printf("%llu", req.mtype);
             switch (req.mtype)
             {
             case SAVE_USERNAME:
                 res.qid = insert_table(req.mtext, hash_table);
                 res.mtype = req.pid;
-                msgsnd(ctrl_res_qid, &res, sizeof(res) - sizeof(long), 0);
+                printf("%lu", res.mtype);
+                msgsnd(ctrl_res_qid, &res, sizeof(res.qid), 0);
                 break;
             case GET_UID:
-                struct hash_entry *he = search_table(req.mtext, hash_table);
+                he = search_table(req.mtext, hash_table);
                 res.qid = (he == NULL ? 0 : he->msgid);
                 res.mtype = req.pid;
-                msgsnd(ctrl_res_qid, &res, sizeof(res) - sizeof(long), 0);
+                msgsnd(ctrl_res_qid, &res, sizeof(res.qid), 0);
                 break;
             case GET_USERLIST:
-                struct msg message;
                 message.mtype = req.pid;
                 message.mtext = malloc(MAX_BUFFER_LENGTH);
                 int pos = 0;
@@ -200,10 +205,10 @@ void handle_username()
                     }
                 }
                 message.mtext[pos] = '\0';
-                msgsnd(msqid, &message, sizeof(message) - sizeof(long), 0);
+                msgsnd(msqid, &message, sizeof(message.mtext), 0);
                 break;
             case LEAVE_SERVER:
-                struct hash_entry *he = search_table(req.mtext, hash_table);
+                he = search_table(req.mtext, hash_table);
                 res.mtype = req.pid;
                 if (he == NULL)
                 {
@@ -216,6 +221,11 @@ void handle_username()
                 }
                 break;
             case BROADCAST:
+                for(int i=0;i<HASH_TABLE_SIZE;i++){
+                    message.mtype = req.pid;
+                    strcpy(message.mtext, req.mtext);
+                    msgsnd(msqid, &message, sizeof(message.mtext),0);
+                }
                 break;
             default:
                 break;
@@ -239,10 +249,10 @@ int get_uid(char username[], int type)
         error_exit("malloc");
     strcpy(un_msg.mtext, username);
     msgsnd(ctrl_qid, &un_msg, un_size + sizeof(un_msg.pid), 0);
-    printf("uid request send\n");
+    printf("uid request sent for %s\n", un_msg.mtext);
     struct ctrl_res_msg reply;
-    msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0); // 1 character for indicating success or failure
-    printf("uid request received back\n");
+    msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0); 
+    printf("uid response %d\n", reply.qid);
     return reply.qid;
 }
 
@@ -262,12 +272,13 @@ void login_client(int clientfd)
         if ((name_len = recv(clientfd, self_username, MAX_USERNAME_LENGTH - 1, 0)) < 0)
             error_exit("recv");
         self_username[name_len] = '\0';
-
+        char *username = strtok(self_username, delim);
         // Send username to process handling usernames
-        self_uid = get_uid(self_username, SAVE_USERNAME);
+        self_uid = get_uid(username, SAVE_USERNAME);
     }
 
-    printf("Handling username: %s\n", self_username);
+    strcpy(msg, "Logged in\n");
+    send(clientfd, msg, strlen(msg), 0);
 }
 
 void send_msg(int clientfd, char *cmd, char *msg)
@@ -320,6 +331,7 @@ void *read_mq(void *cfd)
     {
         error_exit("malloc");
     }
+    // printf("reading msq\n");
     while (self_uid != 0)
     {
         memset(&msg, 0, sizeof(msg));
@@ -352,7 +364,6 @@ void process_client(int clientfd)
     }
 
     char buf[MAX_BUFFER_LENGTH];
-    char delim[] = " \t\r\n\v\f"; // POSIX whitespace characters
     int bytes_read;
     while (1)
     {
@@ -396,6 +407,7 @@ int main()
 
     msqid = msgget(IPC_PRIVATE, 0600);
     ctrl_qid = msgget(IPC_PRIVATE, 0600);
+    ctrl_res_qid = msgget(IPC_PRIVATE, 0600);
     int serverSocket = socket(PF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1)
         error_exit("socket creation error");
@@ -411,6 +423,7 @@ int main()
     if (listen(serverSocket, MAX_PENDING) == -1)
         error_exit("listen error");
 
+    handle_username();
     for (int numConn = 0; numConn < HASH_TABLE_SIZE; numConn++)
     {
         int clientLength = sizeof(clientAddress);
