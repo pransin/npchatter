@@ -1,12 +1,12 @@
 #define HASH_TABLE_SIZE 517
-#define MAX_USERNAME_LENGTH 32
+#define MAX_USERNAME_LENGTH 16
 #define MAX_PENDING 5
 #define SAVE_USERNAME 1
 #define GET_UID 2
 #define GET_USERLIST 3
 #define LEAVE_SERVER 4
 #define BROADCAST 5
-#define MAX_BUFFER_LENGTH 4096 // Includes null char
+#define MAX_BUFFER_LENGTH 1024 // Includes null char
 
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -23,14 +23,14 @@
 struct msg
 {
     long mtype;
-    char *mtext;
+    char mtext[MAX_BUFFER_LENGTH];
 };
 
 struct ctrl_msg
 {
     long mtype;
     pid_t pid;
-    char *mtext;
+    char mtext[MAX_USERNAME_LENGTH];
 };
 
 struct ctrl_res_msg
@@ -154,25 +154,22 @@ void handle_username()
 
     if (username_handler == 0)
     {
-        printf("in handle_username\n");
         struct hash_entry hash_table[HASH_TABLE_SIZE];
+        memset(hash_table, 0, sizeof(hash_table));
         struct hash_entry *he;
         struct msg message;
         struct ctrl_msg req;
         struct ctrl_res_msg res;
         int types[5] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER, BROADCAST};
         int i = 0;
-        req.mtext = malloc(MAX_USERNAME_LENGTH); // TODO: Error Checking
         while (1)
         {
-            msgrcv(ctrl_qid, &req, sizeof(req.pid) + MAX_USERNAME_LENGTH, 0, 0);
-            printf("%llu", req.mtype);
+            int nb = msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(req.mtype), 0, 0);
             switch (req.mtype)
             {
             case SAVE_USERNAME:
                 res.qid = insert_table(req.mtext, hash_table);
                 res.mtype = req.pid;
-                printf("%lu", res.mtype);
                 msgsnd(ctrl_res_qid, &res, sizeof(res.qid), 0);
                 break;
             case GET_UID:
@@ -183,7 +180,6 @@ void handle_username()
                 break;
             case GET_USERLIST:
                 message.mtype = req.pid;
-                message.mtext = malloc(MAX_BUFFER_LENGTH);
                 int pos = 0;
                 for (int i = 0; i < HASH_TABLE_SIZE; i++)
                 {
@@ -233,6 +229,7 @@ void handle_username()
             }
             i = (i + 1) % 5;
         }
+        exit(EXIT_FAILURE);
     }
     else
     {
@@ -242,29 +239,25 @@ void handle_username()
 int get_uid(char username[], int type)
 {
     struct ctrl_msg un_msg;
-    size_t un_size = strlen(username);
+    size_t un_size = strlen(username) + 1;
     un_msg.mtype = type;
     un_msg.pid = getpid();
-    un_msg.mtext = malloc(un_size);
-    if (un_msg.mtext == NULL)
-        error_exit("malloc");
     strcpy(un_msg.mtext, username);
-    msgsnd(ctrl_qid, &un_msg, un_size + sizeof(un_msg.pid), 0);
-    printf("uid request sent for %s\n", un_msg.mtext);
+    msgsnd(ctrl_qid, &un_msg, sizeof(un_msg) - sizeof(un_msg.mtype), 0);
+    // printf("username before sending: %s, length: %d, bytes sent: %d\n", un_msg.mtext, strlen(un_msg.mtext), un_size + sizeof(un_msg.pid));
     struct ctrl_res_msg reply;
     msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0);
-    printf("uid response %d\n", reply.qid);
     return reply.qid;
 }
 
-// check if the username is current in use.
+// check if the username is currently in use.
 void login_client(int clientfd)
 {
-    char msg[] = "Enter Username (Max 31 characters):";
+    char msg[] = "Enter Username (Max 15 characters):";
     self_uid = 0;
     while (!self_uid)
     {
-        if (send(clientfd, msg, strlen(msg), 0) != strlen(msg))
+        if (send(clientfd, msg, strlen(msg) + 1, 0) != strlen(msg) + 1)
             error_exit("send error");
 
         strcpy(msg, "Username taken. Try another one: "); // ensure strlen(msg) > second string
@@ -273,13 +266,14 @@ void login_client(int clientfd)
         if ((name_len = recv(clientfd, self_username, MAX_USERNAME_LENGTH - 1, 0)) < 0)
             error_exit("recv");
         self_username[name_len] = '\0';
-        char *username = strtok(self_username, delim);
+        char *un_ptr = self_username;
+        char *username = strtok_r(un_ptr, delim, &un_ptr);
         // Send username to process handling usernames
-        self_uid = get_uid(username, SAVE_USERNAME);
+        self_uid = get_uid(username, SAVE_USERNAME); 
     }
 
     strcpy(msg, "Logged in\n");
-    send(clientfd, msg, strlen(msg), 0);
+    send(clientfd, msg, strlen(msg) + 1, 0);
 }
 
 void send_msg(int clientfd, char *cmd, char *msg)
@@ -298,8 +292,8 @@ void send_msg(int clientfd, char *cmd, char *msg)
     }
     struct msg message;
     message.mtype = uid;
-    message.mtext = msg;
-    msgsnd(msqid, &message, strlen(msg), 0);
+    strcpy(message.mtext, msg);
+    msgsnd(msqid, &message, strlen(msg) + 1, 0);
 }
 
 void leave_server()
@@ -307,11 +301,8 @@ void leave_server()
     int un_size = strlen(self_username);
     struct ctrl_msg msg;
     msg.mtype = LEAVE_SERVER;
-    msg.mtext = malloc(un_size);
-    if (msg.mtext == NULL)
-        error_exit("malloc");
     strcpy(msg.mtext, self_username);
-    msgsnd(ctrl_qid, &msg, un_size, 0);
+    msgsnd(ctrl_qid, &msg, sizeof(msg) - sizeof(msg.mtype), 0);
     self_uid = 0;
 }
 
@@ -327,12 +318,6 @@ void *read_mq(void *cfd)
 {
     int clientfd = *(int *)cfd;
     struct msg msg;
-    msg.mtext = malloc(MAX_BUFFER_LENGTH);
-    if (msg.mtext == NULL)
-    {
-        error_exit("malloc");
-    }
-    // printf("reading msq\n");
     while (self_uid != 0)
     {
         memset(&msg, 0, sizeof(msg));
@@ -348,10 +333,10 @@ void broadcast_ms(int clientfd, char *msg)
         return;
     }
 
-    struct ctrl_msg message;
-    message.mtype = BROADCAST;
-    message.mtext = msg;
-    msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0); // Broadcasting is handled by the process handling the hash table
+    // struct ctrl_msg message;
+    // message.mtype = BROADCAST;
+    // message.mtext = msg;
+    // msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0); // Broadcasting is handled by the process handling the hash table
 }
 
 void process_client(int clientfd)
