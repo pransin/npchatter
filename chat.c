@@ -6,6 +6,8 @@
 #define GET_USERLIST 3
 #define LEAVE_SERVER 4
 #define BROADCAST 5
+#define LOGOUT 6
+#define HT_ID 1000000000
 #define MAX_BUFFER_LENGTH 1024 // Includes null char
 
 #include <arpa/inet.h>
@@ -19,6 +21,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <time.h>
 
 struct msg
 {
@@ -103,7 +106,15 @@ int insert_table(char *username, struct hash_entry *hash_table)
     if (strcmp(hash_table[hash_value].user_name, username) == 0)
     {
         // perror("Username already in use");
-        return 0;
+        if (hash_table[hash_value].is_online == false)
+        {
+            hash_table[hash_value].is_online = true;
+            return hash_table[hash_value].msgid;
+        }
+        else
+        {
+            return 0;
+        }
     }
     if (hash_table[hash_value].present == true)
     {
@@ -160,11 +171,11 @@ void handle_username()
         struct msg message;
         struct ctrl_msg req;
         struct ctrl_res_msg res;
-        int types[5] = {SAVE_USERNAME, GET_UID, GET_USERLIST, LEAVE_SERVER, BROADCAST};
-        int i = 0;
+        int bytes_read;
         while (1)
         {
             int nb = msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(req.mtype), 0, 0);
+            // printf("%ld %s\n", req.mtype, req.mtext);
             switch (req.mtype)
             {
             case SAVE_USERNAME:
@@ -212,27 +223,40 @@ void handle_username()
                 }
                 else
                 {
-                    he->is_online = false;
+                    he->present = false;
                     res.qid = 1;
                 }
                 break;
             case BROADCAST:
+                bytes_read = msgrcv(msqid, &message, sizeof(message) - sizeof(message.mtype), HT_ID, 0);
+                printf("broadcasting: %d\n", bytes_read);
                 for (int i = 0; i < HASH_TABLE_SIZE; i++)
                 {
-                    message.mtype = req.pid;
-                    strcpy(message.mtext, req.mtext);
-                    msgsnd(msqid, &message, sizeof(message.mtext), 0);
+                    if (hash_table[i].present)
+                    {
+                        message.mtype = hash_table[i].msgid;
+                        msgsnd(msqid, &message, bytes_read, 0);
+                    }
+                }
+                break;
+            case LOGOUT:
+                he = search_table(req.mtext, hash_table);
+                res.mtype = req.pid;
+                if (he == NULL)
+                {
+                    res.qid = 0;
+                }
+                else
+                {
+                    he->is_online = false;
+                    res.qid = 1;
                 }
                 break;
             default:
                 break;
             }
-            i = (i + 1) % 5;
         }
         exit(EXIT_FAILURE);
-    }
-    else
-    {
     }
 }
 
@@ -269,7 +293,7 @@ void login_client(int clientfd)
         char *un_ptr = self_username;
         char *username = strtok_r(un_ptr, delim, &un_ptr);
         // Send username to process handling usernames
-        self_uid = get_uid(username, SAVE_USERNAME); 
+        self_uid = get_uid(username, SAVE_USERNAME);
     }
 
     strcpy(msg, "Logged in\n");
@@ -318,12 +342,17 @@ void *read_mq(void *cfd)
 {
     int clientfd = *(int *)cfd;
     struct msg msg;
-    while (self_uid != 0)
+    while (1)
     {
         memset(&msg, 0, sizeof(msg));
         int bytes_read = msgrcv(msqid, &msg, MAX_BUFFER_LENGTH, self_uid, 0);
+        if (bytes_read == 0)
+            break;
+        printf("Received Broadcast: %s", msg.mtext);
         send(clientfd, msg.mtext, bytes_read, 0);
     }
+
+    self_uid = 0;
 }
 void broadcast_ms(int clientfd, char *msg)
 {
@@ -333,10 +362,27 @@ void broadcast_ms(int clientfd, char *msg)
         return;
     }
 
-    // struct ctrl_msg message;
-    // message.mtype = BROADCAST;
-    // message.mtext = msg;
-    // msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0); // Broadcasting is handled by the process handling the hash table
+    struct ctrl_msg ctrl_msg;
+    ctrl_msg.mtype = BROADCAST;
+    msgsnd(ctrl_qid, &ctrl_msg, sizeof(ctrl_msg.pid), 0); // Ask ht process to collect broadcast message
+
+    struct msg main_msg;
+    main_msg.mtype = HT_ID;
+    strcpy(main_msg.mtext, msg);
+    msgsnd(msqid, &main_msg, strlen(msg) + 1, 0);
+}
+
+void logout(int clientfd)
+{
+    struct ctrl_msg msg;
+    msg.mtype = LOGOUT;
+    strcpy(msg.mtext, self_username);
+    msgsnd(ctrl_qid, &msg, sizeof(msg) - sizeof(msg.mtype), 0);
+
+    struct msg message;
+    message.mtype = self_uid;
+    msgsnd(msqid, &message, 0, 0);
+    self_uid = 0;
 }
 
 void process_client(int clientfd)
@@ -354,21 +400,27 @@ void process_client(int clientfd)
     while (1)
     {
         if ((bytes_read = recv(clientfd, buf, MAX_BUFFER_LENGTH - 1, 0)) < 0)
+        {
             error_exit("recv");
+        }
 
         buf[bytes_read] = '\0';
         char *cmd, *msg = buf;
         cmd = strtok_r(msg, delim, &msg);
+        if (bytes_read == 0 || strcmp(cmd, "logout") == 0)
+        {
+            logout(clientfd);
+            pthread_join(msq_t, NULL);
+            exit(EXIT_SUCCESS);
+        }
         if (strcmp(cmd, "leave") == 0)
         {
-            // TODO
             leave_server(clientfd);
             pthread_join(msq_t, NULL);
             exit(EXIT_SUCCESS);
         }
         else if (strcmp(cmd, "get_users") == 0)
         {
-            // TODO
             get_userlist(clientfd);
         }
         else if (strcmp(cmd, "send") == 0)
