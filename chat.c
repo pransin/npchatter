@@ -212,7 +212,7 @@ void handle_username()
                     }
                 }
                 message.mtext[pos] = '\0';
-                msgsnd(msqid, &message, sizeof(message.mtext), 0);
+                msgsnd(msqid, &message, strlen(message.mtext) + 1, 0);
                 break;
             case LEAVE_SERVER:
                 he = search_table(req.mtext, hash_table);
@@ -224,6 +224,7 @@ void handle_username()
                 else
                 {
                     he->present = false;
+                    he->user_name[0] = '\0';
                     res.qid = 1;
                 }
                 break;
@@ -327,6 +328,10 @@ void leave_server()
     msg.mtype = LEAVE_SERVER;
     strcpy(msg.mtext, self_username);
     msgsnd(ctrl_qid, &msg, sizeof(msg) - sizeof(msg.mtype), 0);
+
+    struct msg message;
+    message.mtype = self_uid;
+    msgsnd(msqid, &message, 0, 0);
     self_uid = 0;
 }
 
@@ -416,6 +421,7 @@ void process_client(int clientfd)
         if (strcmp(cmd, "leave") == 0)
         {
             leave_server(clientfd);
+
             pthread_join(msq_t, NULL);
             exit(EXIT_SUCCESS);
         }
