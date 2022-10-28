@@ -7,9 +7,12 @@
 #define LEAVE_SERVER 4
 #define BROADCAST 5
 #define LOGOUT 6
+// #define BLOCK 7
+// #define UNBLOCK 8
 #define HT_ID 1000000000
 #define MAX_BUFFER_LENGTH 1024 // Includes null char
 #define MAX_TIME_LENGTH 20
+#define MAX_BLOCKED_USERS 10
 
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -59,6 +62,8 @@ int ctrl_res_qid; // Control response qid
 char self_username[MAX_USERNAME_LENGTH];
 int self_uid; // self_uid = 0 if offline
 
+char blocked_users[MAX_BLOCKED_USERS][MAX_USERNAME_LENGTH];
+pthread_mutex_t block_arr = PTHREAD_MUTEX_INITIALIZER;
 void sigint_handler(int signo)
 {
     msgctl(msqid, IPC_RMID, NULL);
@@ -138,6 +143,10 @@ int insert_table(char *username, struct hash_entry *hash_table)
     hash_table[hash_value].msgid = hash_value + 1;
     hash_table[hash_value].is_online = true;
     strcpy(hash_table[hash_value].last_seen, "Online");
+    // for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+    // {
+    //     hash_table[hash_value].blocked_users[i][0] = '\0';
+    // }
     return hash_table[hash_value].msgid;
 }
 
@@ -199,6 +208,10 @@ void handle_username()
             case GET_UID:
                 he = search_table(req.mtext, hash_table);
                 res.qid = (he == NULL ? 0 : he->msgid);
+                // for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+                // {
+                //     if (strcmp(he->blocked_users[i], ))
+                // }
                 res.mtype = req.pid;
                 msgsnd(ctrl_res_qid, &res, sizeof(res.qid), 0);
                 break;
@@ -251,10 +264,26 @@ void handle_username()
                 // printf("broadcasting: %d\n", bytes_read);
                 for (int i = 0; i < HASH_TABLE_SIZE; i++)
                 {
-                    if (hash_table[i].present && strcmp(hash_table[i].user_name, req.mtext) != 0)
+                    if (hash_table[i].present)
                     {
-                        message.mtype = hash_table[i].msgid;
-                        msgsnd(msqid, &message, bytes_read, 0);
+                        // bool is_blocked = false;
+                        // for (int j = 0; j < MAX_BLOCKED_USERS; j++)
+                        // {
+                        //     if (strcmp(hash_table[i].blocked_users[j], req.mtext) == 0)
+                        //     {
+                        //         is_blocked = true;
+                        //         break;
+                        //     }
+                        // }
+                        // if (is_blocked)
+                        // {
+                        //     continue;
+                        // }
+                        if (strcmp(hash_table[i].user_name, req.mtext) != 0)
+                        {
+                            message.mtype = hash_table[i].msgid;
+                            msgsnd(msqid, &message, bytes_read, 0);
+                        }
                     }
                 }
                 break;
@@ -267,12 +296,50 @@ void handle_username()
                 }
                 else
                 {
+
                     he->is_online = false;
                     time_t t = time(NULL);
                     strcpy(he->last_seen, ctime(&t));
                     res.qid = 1;
                 }
                 break;
+            // case BLOCK:
+            //     he = search_table(, hash_table);
+            //     bool is_blocked = false;
+            //     int first_free_index = -1;
+            //     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+            //     {
+            //         if (strlen(he->blocked_users[i]) > 0)
+            //         {
+            //             if (strcmp(he->blocked_users[i], ) == 0)
+            //             {
+            //                 is_blocked = true;
+            //             }
+            //         }
+            //         else
+            //         {
+            //             if (first_free_index == -1)
+            //             {
+            //                 first_free_index = i;
+            //             }
+            //         }
+            //         if (!is_blocked)
+            //         {
+            //             strcpy(he->blocked_users[first_free_index], );
+            //         }
+            //     }
+            //     break;
+            // case UNBLOCK:
+            //     he = search_table(, hash_table);
+            //     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+            //     {
+            //         if (strcmp(he->blocked_users[i], ) == 0)
+            //         {
+            //             he->blocked_users[i][0] = '\0';
+            //             break;
+            //         }
+            //     }
+            //     break;
             default:
                 break;
             }
@@ -298,7 +365,7 @@ int get_uid(char username[], int type)
 // check if the username is currently in use.
 void login_client(int clientfd)
 {
-    char msg[] = "Enter Username (Max 15 characters):";
+    char msg[] = "Enter Username (Max 15 characters): ";
     self_uid = 0;
     while (!self_uid)
     {
@@ -332,6 +399,10 @@ void send_msg(int clientfd, char *un, char *msg)
     }
 
     int uid = get_uid(un, GET_UID);
+    if (uid == -1)
+    {
+        return;
+    }
     if (!uid)
     {
         send_error_msg(clientfd, "Invalid username\n");
@@ -375,13 +446,30 @@ void *read_mq(void *cfd)
     {
         memset(&msg, 0, sizeof(msg));
         int bytes_read = msgrcv(msqid, &msg, MAX_BUFFER_LENGTH, self_uid, 0);
+        printf("kya ho raha h\n");
+
         if (bytes_read == 0)
             break;
         // printf("Received Broadcast: %s", msg.mtext);
+        char *sender = msg.mtext;
+        int pos = 0;
+        while (msg.mtext[pos] != ':')
+            pos++;
+        msg.mtext[pos] = '\0';
+        for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+        {
+            // pthread_mutex_lock(&block_arr);
+            if (strcmp(blocked_users[i], sender) == 0)
+            {
+                // printf("kya ho raha h\n");
+                return NULL;
+            }
+            // pthread_mutex_unlock(&block_arr);
+        }
+
+        msg.mtext[pos] = ':';
         send(clientfd, msg.mtext, bytes_read, 0);
     }
-
-    self_uid = 0;
 }
 void broadcast_ms(int clientfd, char *msg)
 {
@@ -419,8 +507,49 @@ void logout(int clientfd, pthread_t msq_t)
     exit(EXIT_SUCCESS);
 }
 
+void block(int clientfd, char *un)
+{
+    if (!un)
+    {
+        send_error_msg(clientfd, "Username not mentioned\n");
+        return;
+    }
+
+    for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+    {
+        // pthread_mutex_lock(&block_arr);
+        if (blocked_users[i][0] == '\0')
+        {
+            strcpy(blocked_users[i], un);
+            break;
+        }
+        // pthread_mutex_unlock(&block_arr);
+    }
+}
+
+void unblock(int clientfd, char *un)
+{
+    if (!un)
+    {
+        send_error_msg(clientfd, "Username not mentioned\n");
+        return;
+    }
+
+    for (int i = 0; i < MAX_BLOCKED_USERS; i++)
+    {
+        // pthread_mutex_lock(&block_arr);
+        if (strcmp(blocked_users[i], un) == 0)
+        {
+            blocked_users[i][0] = '\0';
+            break;
+        }
+        // pthread_mutex_unlock(&block_arr);
+    }
+}
+
 void process_client(int clientfd)
 {
+    memset(blocked_users, 0, sizeof(blocked_users));
     login_client(clientfd);
     // Spawn a thread for relaying from message queue to socket
     pthread_t msq_t;
@@ -467,6 +596,16 @@ void process_client(int clientfd)
         else if (strcmp(cmd, "sendall") == 0)
         {
             broadcast_ms(clientfd, msg);
+        }
+        else if (strcmp(cmd, "block") == 0)
+        {
+            cmd = strtok_r(msg, delim, &msg);
+            block(clientfd, cmd);
+        }
+        else if (strcmp(cmd, "unblock") == 0)
+        {
+            cmd = strtok_r(msg, delim, &msg);
+            unblock(clientfd, cmd);
         }
         else
         {
