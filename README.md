@@ -37,6 +37,12 @@ Send message to all users.
     get_users
 ```
 
+- Block and unblock upto 10 users
+```
+    block pranjal
+    unblock pranjal
+```
+
 - Leave the chat server
 ```
     leave
@@ -80,20 +86,28 @@ A total of three message queues have been used.
 - For offline users, last seen information is maintained in the hashtable.
 - This can be viewed using `get_users` command.
 
-#### Block users
-
-- Upto 10 users can be blocked
+#### Temporarily block users
+- Upto 10 users can be blocked. 
+- Maintained a list of blocked user. Message sent to a blocked user are permanently lost.
 
 ## Screenshots
 
-### Connecting to the server
 ![Connecting to the server](./screenshots/connecting.jpeg?raw=true)
+*Connecting to the server*
 
-### Get List of users
+&nbsp;
+
 ![Get List of users](./screenshots/get_user_list.png?raw=true)
+*Get List of users*
 
-### Sending a message
+&nbsp;
 ![Sending a message](./screenshots/send_msg.png?raw=true)
+*Sending a message*
 
-### Broadcasting a message
+&nbsp;
 ![Broadcasting a message](./screenshots/broadcast.png?raw=true)
+*Broadcasting a message*
+
+&nbsp;
+![Blocking user](./screenshots/block.png?raw=true)
+*Blocking users*
