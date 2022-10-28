@@ -9,6 +9,7 @@
 #define LOGOUT 6
 #define HT_ID 1000000000
 #define MAX_BUFFER_LENGTH 1024 // Includes null char
+#define MAX_TIME_LENGTH 20
 
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -49,6 +50,7 @@ struct hash_entry
     int msgid;
     bool present;
     bool is_online;
+    char last_seen[MAX_TIME_LENGTH];
 };
 char delim[] = " \t\r\n\v\f"; // POSIX whitespace characters
 int msqid;
@@ -57,7 +59,8 @@ int ctrl_res_qid; // Control response qid
 char self_username[MAX_USERNAME_LENGTH];
 int self_uid; // self_uid = 0 if offline
 
-void sigint_handler(int signo){
+void sigint_handler(int signo)
+{
     msgctl(msqid, IPC_RMID, NULL);
     msgctl(ctrl_qid, IPC_RMID, NULL);
     msgctl(ctrl_res_qid, IPC_RMID, NULL);
@@ -117,6 +120,7 @@ int insert_table(char *username, struct hash_entry *hash_table)
         if (hash_table[hash_value].is_online == false)
         {
             hash_table[hash_value].is_online = true;
+            strcpy(hash_table[hash_value].last_seen, "Online");
             return hash_table[hash_value].msgid;
         }
         else
@@ -133,6 +137,7 @@ int insert_table(char *username, struct hash_entry *hash_table)
     strcpy(hash_table[hash_value].user_name, username);
     hash_table[hash_value].msgid = hash_value + 1;
     hash_table[hash_value].is_online = true;
+    strcpy(hash_table[hash_value].last_seen, "Online");
     return hash_table[hash_value].msgid;
 }
 
@@ -217,8 +222,10 @@ void handle_username()
                         }
                         else
                         {
-                            strcpy(message.mtext + pos, " offline\n");
-                            pos += 9;
+                            strcpy(message.mtext + pos, " offline, Last seen: ");
+                            pos += 21;
+                            strcpy(message.mtext + pos, hash_table[i].last_seen);
+                            pos += strlen(hash_table[i].last_seen);
                         }
                     }
                 }
@@ -261,6 +268,8 @@ void handle_username()
                 else
                 {
                     he->is_online = false;
+                    time_t t = time(NULL);
+                    strcpy(he->last_seen, ctime(&t));
                     res.qid = 1;
                 }
                 break;
@@ -304,7 +313,7 @@ void login_client(int clientfd)
         self_username[name_len] = '\0';
         char *un_ptr = self_username;
         char *username = strtok_r(un_ptr, delim, &un_ptr);
-        if(!username)
+        if (!username)
             continue;
         // Send username to process handling usernames
         self_uid = get_uid(username, SAVE_USERNAME);
@@ -432,13 +441,12 @@ void process_client(int clientfd)
         buf[bytes_read] = '\0';
         char *cmd, *msg = buf;
         cmd = strtok_r(msg, delim, &msg);
-        if(!cmd)
+        if (!cmd)
             continue;
 
         if (strcmp(cmd, "logout") == 0)
-        {   
+        {
             logout(clientfd, msq_t);
-
         }
         if (strcmp(cmd, "leave") == 0)
         {
@@ -487,14 +495,14 @@ int main()
 
     if (listen(serverSocket, MAX_PENDING) == -1)
         error_exit("listen error");
-    
+
     struct sockaddr_in sin;
     socklen_t len = sizeof(sin);
     if (getsockname(serverSocket, (struct sockaddr *)&sin, &len) == -1)
         perror("getsockname");
     else
         printf("Listening on port: %d\n", ntohs(sin.sin_port));
-    
+
     signal(SIGINT, sigint_handler);
     handle_username();
     for (int numConn = 0; numConn < HASH_TABLE_SIZE; numConn++)
