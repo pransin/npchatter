@@ -197,7 +197,6 @@ void handle_username()
         while (1)
         {
             int nb = msgrcv(ctrl_qid, &req, sizeof(req) - sizeof(req.mtype), 0, 0);
-            // printf("%ld %s\n", req.mtype, req.mtext);
             switch (req.mtype)
             {
             case SAVE_USERNAME:
@@ -208,10 +207,6 @@ void handle_username()
             case GET_UID:
                 he = search_table(req.mtext, hash_table);
                 res.qid = (he == NULL ? 0 : he->msgid);
-                // for (int i = 0; i < MAX_BLOCKED_USERS; i++)
-                // {
-                //     if (strcmp(he->blocked_users[i], ))
-                // }
                 res.mtype = req.pid;
                 msgsnd(ctrl_res_qid, &res, sizeof(res.qid), 0);
                 break;
@@ -266,19 +261,6 @@ void handle_username()
                 {
                     if (hash_table[i].present)
                     {
-                        // bool is_blocked = false;
-                        // for (int j = 0; j < MAX_BLOCKED_USERS; j++)
-                        // {
-                        //     if (strcmp(hash_table[i].blocked_users[j], req.mtext) == 0)
-                        //     {
-                        //         is_blocked = true;
-                        //         break;
-                        //     }
-                        // }
-                        // if (is_blocked)
-                        // {
-                        //     continue;
-                        // }
                         if (strcmp(hash_table[i].user_name, req.mtext) != 0)
                         {
                             message.mtype = hash_table[i].msgid;
@@ -303,43 +285,6 @@ void handle_username()
                     res.qid = 1;
                 }
                 break;
-            // case BLOCK:
-            //     he = search_table(, hash_table);
-            //     bool is_blocked = false;
-            //     int first_free_index = -1;
-            //     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
-            //     {
-            //         if (strlen(he->blocked_users[i]) > 0)
-            //         {
-            //             if (strcmp(he->blocked_users[i], ) == 0)
-            //             {
-            //                 is_blocked = true;
-            //             }
-            //         }
-            //         else
-            //         {
-            //             if (first_free_index == -1)
-            //             {
-            //                 first_free_index = i;
-            //             }
-            //         }
-            //         if (!is_blocked)
-            //         {
-            //             strcpy(he->blocked_users[first_free_index], );
-            //         }
-            //     }
-            //     break;
-            // case UNBLOCK:
-            //     he = search_table(, hash_table);
-            //     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
-            //     {
-            //         if (strcmp(he->blocked_users[i], ) == 0)
-            //         {
-            //             he->blocked_users[i][0] = '\0';
-            //             break;
-            //         }
-            //     }
-            //     break;
             default:
                 break;
             }
@@ -446,26 +391,28 @@ void *read_mq(void *cfd)
     {
         memset(&msg, 0, sizeof(msg));
         int bytes_read = msgrcv(msqid, &msg, MAX_BUFFER_LENGTH, self_uid, 0);
-        printf("kya ho raha h\n");
-
         if (bytes_read == 0)
             break;
-        // printf("Received Broadcast: %s", msg.mtext);
         char *sender = msg.mtext;
         int pos = 0;
         while (msg.mtext[pos] != ':')
             pos++;
         msg.mtext[pos] = '\0';
+        bool is_blocked = false;
         for (int i = 0; i < MAX_BLOCKED_USERS; i++)
         {
-            // pthread_mutex_lock(&block_arr);
+            pthread_mutex_lock(&block_arr);
             if (strcmp(blocked_users[i], sender) == 0)
             {
-                // printf("kya ho raha h\n");
-                return NULL;
+                is_blocked = true;
+                pthread_mutex_unlock(&block_arr);
+                break;
             }
-            // pthread_mutex_unlock(&block_arr);
+            pthread_mutex_unlock(&block_arr);
         }
+
+        if(is_blocked)
+            continue;
 
         msg.mtext[pos] = ':';
         send(clientfd, msg.mtext, bytes_read, 0);
@@ -489,7 +436,6 @@ void broadcast_ms(int clientfd, char *msg)
     strcat(main_msg.mtext, ": ");
     strcat(main_msg.mtext, msg);
     main_msg.mtype = HT_ID;
-    // printf("%s\n", main_msg.mtext);
     msgsnd(msqid, &main_msg, strlen(main_msg.mtext) + 1, 0);
 }
 
@@ -517,13 +463,14 @@ void block(int clientfd, char *un)
 
     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
     {
-        // pthread_mutex_lock(&block_arr);
+        pthread_mutex_lock(&block_arr);
         if (blocked_users[i][0] == '\0')
         {
             strcpy(blocked_users[i], un);
+            pthread_mutex_unlock(&block_arr);
             break;
         }
-        // pthread_mutex_unlock(&block_arr);
+        pthread_mutex_unlock(&block_arr);
     }
 }
 
@@ -537,13 +484,14 @@ void unblock(int clientfd, char *un)
 
     for (int i = 0; i < MAX_BLOCKED_USERS; i++)
     {
-        // pthread_mutex_lock(&block_arr);
+        pthread_mutex_lock(&block_arr);
         if (strcmp(blocked_users[i], un) == 0)
         {
             blocked_users[i][0] = '\0';
+            pthread_mutex_unlock(&block_arr);
             break;
         }
-        // pthread_mutex_unlock(&block_arr);
+        pthread_mutex_unlock(&block_arr);
     }
 }
 
