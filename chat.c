@@ -191,7 +191,10 @@ void handle_username()
                 break;
             case GET_USERLIST:
                 message.mtype = req.pid;
-                int pos = 0;
+                int pos = 9;
+                strcpy(message.mtext, "Server::\n");
+                // strcat(message.mte)
+                // memset(message.mtext, 0, sizeof(message.mtext));
                 for (int i = 0; i < HASH_TABLE_SIZE; i++)
                 {
                     if (hash_table[i].present == true)
@@ -230,10 +233,10 @@ void handle_username()
                 break;
             case BROADCAST:
                 bytes_read = msgrcv(msqid, &message, sizeof(message) - sizeof(message.mtype), HT_ID, 0);
-                printf("broadcasting: %d\n", bytes_read);
+                // printf("broadcasting: %d\n", bytes_read);
                 for (int i = 0; i < HASH_TABLE_SIZE; i++)
                 {
-                    if (hash_table[i].present)
+                    if (hash_table[i].present && strcmp(hash_table[i].user_name, req.mtext) != 0)
                     {
                         message.mtype = hash_table[i].msgid;
                         msgsnd(msqid, &message, bytes_read, 0);
@@ -268,7 +271,7 @@ int get_uid(char username[], int type)
     un_msg.mtype = type;
     un_msg.pid = getpid();
     strcpy(un_msg.mtext, username);
-    msgsnd(ctrl_qid, &un_msg, sizeof(un_msg) - sizeof(un_msg.mtype), 0);
+    msgsnd(ctrl_qid, &un_msg, sizeof(un_msg.pid) + strlen(un_msg.mtext) + 1, 0);
     // printf("username before sending: %s, length: %d, bytes sent: %d\n", un_msg.mtext, strlen(un_msg.mtext), un_size + sizeof(un_msg.pid));
     struct ctrl_res_msg reply;
     msgrcv(ctrl_res_qid, &reply, sizeof(int), getpid(), 0);
@@ -293,6 +296,8 @@ void login_client(int clientfd)
         self_username[name_len] = '\0';
         char *un_ptr = self_username;
         char *username = strtok_r(un_ptr, delim, &un_ptr);
+        if(!username)
+            continue;
         // Send username to process handling usernames
         self_uid = get_uid(username, SAVE_USERNAME);
     }
@@ -301,15 +306,15 @@ void login_client(int clientfd)
     send(clientfd, msg, strlen(msg) + 1, 0);
 }
 
-void send_msg(int clientfd, char *cmd, char *msg)
+void send_msg(int clientfd, char *un, char *msg)
 {
-    if (!strlen(msg))
+    if (!un || !msg || !strlen(msg))
     {
         send_error_msg(clientfd, "Received empty message\n");
         return;
     }
 
-    int uid = get_uid(cmd, GET_UID);
+    int uid = get_uid(un, GET_UID);
     if (!uid)
     {
         send_error_msg(clientfd, "Invalid username\n");
@@ -317,8 +322,10 @@ void send_msg(int clientfd, char *cmd, char *msg)
     }
     struct msg message;
     message.mtype = uid;
-    strcpy(message.mtext, msg);
-    msgsnd(msqid, &message, strlen(msg) + 1, 0);
+    strcpy(message.mtext, self_username);
+    strcat(message.mtext, ": ");
+    strcat(message.mtext, msg);
+    msgsnd(msqid, &message, strlen(message.mtext) + 1, 0);
 }
 
 void leave_server()
@@ -327,7 +334,7 @@ void leave_server()
     struct ctrl_msg msg;
     msg.mtype = LEAVE_SERVER;
     strcpy(msg.mtext, self_username);
-    msgsnd(ctrl_qid, &msg, sizeof(msg) - sizeof(msg.mtype), 0);
+    msgsnd(ctrl_qid, &msg, sizeof(msg.pid) + un_size + 1, 0);
 
     struct msg message;
     message.mtype = self_uid;
@@ -340,7 +347,7 @@ void get_userlist(int clientfd)
     struct ctrl_msg message;
     message.mtype = GET_USERLIST;
     message.pid = self_uid;
-    msgsnd(ctrl_qid, &message, sizeof(message.pid) + sizeof(message.mtext), 0);
+    msgsnd(ctrl_qid, &message, sizeof(message.pid), 0);
 }
 
 void *read_mq(void *cfd)
@@ -353,7 +360,7 @@ void *read_mq(void *cfd)
         int bytes_read = msgrcv(msqid, &msg, MAX_BUFFER_LENGTH, self_uid, 0);
         if (bytes_read == 0)
             break;
-        printf("Received Broadcast: %s", msg.mtext);
+        // printf("Received Broadcast: %s", msg.mtext);
         send(clientfd, msg.mtext, bytes_read, 0);
     }
 
@@ -369,12 +376,16 @@ void broadcast_ms(int clientfd, char *msg)
 
     struct ctrl_msg ctrl_msg;
     ctrl_msg.mtype = BROADCAST;
-    msgsnd(ctrl_qid, &ctrl_msg, sizeof(ctrl_msg.pid), 0); // Ask ht process to collect broadcast message
+    strcpy(ctrl_msg.mtext, self_username);
+    msgsnd(ctrl_qid, &ctrl_msg, sizeof(ctrl_msg.pid) + strlen(self_username) + 1, 0); // Ask ht process to collect broadcast message
 
     struct msg main_msg;
+    strcpy(main_msg.mtext, self_username);
+    strcat(main_msg.mtext, ": ");
+    strcat(main_msg.mtext, msg);
     main_msg.mtype = HT_ID;
-    strcpy(main_msg.mtext, msg);
-    msgsnd(msqid, &main_msg, strlen(msg) + 1, 0);
+    // printf("%s\n", main_msg.mtext);
+    msgsnd(msqid, &main_msg, strlen(main_msg.mtext) + 1, 0);
 }
 
 void logout(int clientfd)
@@ -382,7 +393,7 @@ void logout(int clientfd)
     struct ctrl_msg msg;
     msg.mtype = LOGOUT;
     strcpy(msg.mtext, self_username);
-    msgsnd(ctrl_qid, &msg, sizeof(msg) - sizeof(msg.mtype), 0);
+    msgsnd(ctrl_qid, &msg, sizeof(msg.pid) + strlen(msg.mtext) + 1, 0);
 
     struct msg message;
     message.mtype = self_uid;
@@ -408,12 +419,16 @@ void process_client(int clientfd)
         {
             error_exit("recv");
         }
-
         buf[bytes_read] = '\0';
+        // printf("%s\n", buf);
+        // continue;
         char *cmd, *msg = buf;
         cmd = strtok_r(msg, delim, &msg);
+        if(!cmd)
+            continue;
+
         if (bytes_read == 0 || strcmp(cmd, "logout") == 0)
-        {
+        {   
             logout(clientfd);
             pthread_join(msq_t, NULL);
             exit(EXIT_SUCCESS);
@@ -448,7 +463,6 @@ void process_client(int clientfd)
 
 int main()
 {
-
     msqid = msgget(IPC_PRIVATE, 0600);
     ctrl_qid = msgget(IPC_PRIVATE, 0600);
     ctrl_res_qid = msgget(IPC_PRIVATE, 0600);
@@ -459,14 +473,21 @@ int main()
     struct sockaddr_in serverAddress, clientAddress;
     memset(&serverAddress, 0, sizeof(serverAddress));
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(32340);
+    serverAddress.sin_port = htons(INADDR_ANY);
     serverAddress.sin_addr.s_addr = htons(INADDR_ANY);
     if (bind(serverSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) == -1)
         error_exit("bind error");
 
     if (listen(serverSocket, MAX_PENDING) == -1)
         error_exit("listen error");
-
+    
+    struct sockaddr_in sin;
+    socklen_t len = sizeof(sin);
+    if (getsockname(serverSocket, (struct sockaddr *)&sin, &len) == -1)
+        perror("getsockname");
+    else
+        printf("Listening on port: %d\n", ntohs(sin.sin_port));
+    
     handle_username();
     for (int numConn = 0; numConn < HASH_TABLE_SIZE; numConn++)
     {
