@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <time.h>
+#include <signal.h>
 
 struct msg
 {
@@ -55,6 +56,13 @@ int ctrl_qid;
 int ctrl_res_qid; // Control response qid
 char self_username[MAX_USERNAME_LENGTH];
 int self_uid; // self_uid = 0 if offline
+
+void sigint_handler(int signo){
+    msgctl(msqid, IPC_RMID, NULL);
+    msgctl(ctrl_qid, IPC_RMID, NULL);
+    msgctl(ctrl_res_qid, IPC_RMID, NULL);
+    exit(EXIT_SUCCESS);
+}
 
 void error_exit(char *msg)
 {
@@ -388,7 +396,7 @@ void broadcast_ms(int clientfd, char *msg)
     msgsnd(msqid, &main_msg, strlen(main_msg.mtext) + 1, 0);
 }
 
-void logout(int clientfd)
+void logout(int clientfd, pthread_t msq_t)
 {
     struct ctrl_msg msg;
     msg.mtype = LOGOUT;
@@ -398,7 +406,8 @@ void logout(int clientfd)
     struct msg message;
     message.mtype = self_uid;
     msgsnd(msqid, &message, 0, 0);
-    self_uid = 0;
+    pthread_join(msq_t, NULL);
+    exit(EXIT_SUCCESS);
 }
 
 void process_client(int clientfd)
@@ -415,23 +424,21 @@ void process_client(int clientfd)
     int bytes_read;
     while (1)
     {
-        if ((bytes_read = recv(clientfd, buf, MAX_BUFFER_LENGTH - 1, 0)) < 0)
+        if ((bytes_read = recv(clientfd, buf, MAX_BUFFER_LENGTH - 1, 0)) <= 0)
         {
-            error_exit("recv");
+            logout(clientfd, msq_t);
         }
+
         buf[bytes_read] = '\0';
-        // printf("%s\n", buf);
-        // continue;
         char *cmd, *msg = buf;
         cmd = strtok_r(msg, delim, &msg);
         if(!cmd)
             continue;
 
-        if (bytes_read == 0 || strcmp(cmd, "logout") == 0)
+        if (strcmp(cmd, "logout") == 0)
         {   
-            logout(clientfd);
-            pthread_join(msq_t, NULL);
-            exit(EXIT_SUCCESS);
+            logout(clientfd, msq_t);
+
         }
         if (strcmp(cmd, "leave") == 0)
         {
@@ -488,6 +495,7 @@ int main()
     else
         printf("Listening on port: %d\n", ntohs(sin.sin_port));
     
+    signal(SIGINT, sigint_handler);
     handle_username();
     for (int numConn = 0; numConn < HASH_TABLE_SIZE; numConn++)
     {
@@ -503,6 +511,7 @@ int main()
         }
         else
         {
+            signal(SIGINT, SIG_DFL);
             process_client(clientSocket);
         }
     }
